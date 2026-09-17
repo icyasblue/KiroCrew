@@ -102,7 +102,11 @@ def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:
             tail = None
     since = str(args.get("since", "") or "").strip() or None
 
-    from kiro_crew.member_memory_auth import mcp_memory_scope, private_memory_boundaries_active
+    from kiro_crew.member_memory_auth import (
+        mcp_memory_scope,
+        private_memory_boundaries_active,
+        read_private_session_store,
+    )
 
     # These protocol logs are shared host files, not this member's diagnostic
     # directory. Redaction cannot establish which session owns ordinary prose.
@@ -113,13 +117,32 @@ def kiro_cli_logs(name: str, args: dict[str, Any]) -> str:
             session_key, refusal = mcp_core.require_strict_session_key(
                 "Error: shared kiro-cli logs require a verified Global V1 session."
             )
-            if session_key and mcp_memory_scope(session_key):
-                refusal = "Error: shared kiro-cli logs are unavailable to private members."
+            # Resolve the member from its verified MCP authority via
+            # mcp_memory_scope, NOT the lenient _resolve_session_key: a subagent
+            # resolves to its PARENT under the lenient walk and could read the
+            # shared logs as a forged Global caller. A non-empty store means a
+            # private member -> the intended "unavailable to private members"
+            # refusal; an empty store is a verified Global V1 caller.
+            if session_key:
+                store = mcp_memory_scope(session_key)
+                if store:
+                    refusal = "Error: shared kiro-cli logs are unavailable to private members."
         else:
             # Pure V1 installations retain the original caller contract.
             session_key = mcp_core._resolve_session_key()
     except (OSError, ValueError, RuntimeError):
+        # An invalid proof or an unreadable protected binding fails CLOSED: the
+        # shared logs are not read, and the denial is audited below. A sandboxed
+        # private member lands here too, because mcp_memory_scope reads the
+        # transcript the member view hides; its gateway-published binding is the
+        # one leaf that stays readable, so a binding naming a store selects the
+        # accurate private-member refusal instead of the generic identity one.
         refusal = "Error: this session's protected memory identity is unavailable."
+        try:
+            if session_key and read_private_session_store(session_key):
+                refusal = "Error: shared kiro-cli logs are unavailable to private members."
+        except (OSError, ValueError):
+            pass
     if refusal:
         try:
             mcp_core.sel().log_tool_invocation(

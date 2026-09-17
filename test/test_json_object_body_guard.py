@@ -359,6 +359,12 @@ _CAP_REGISTER: dict[str, tuple[str, str]] = {
     # a root path and a query the handler caps at 200 characters
     "handlers/files.py::api_file_grep": ("<default>", _BOUNDED_CONTROL_FIELDS),
     "handlers/files.py::api_dashboard_config": ("<default>", _BOUNDED_CONTROL_FIELDS),
+    # handlers/sessions.py: the private-member history relay. Body is an op name
+    # plus that op's schema-validated args, bounded to a small explicit ceiling.
+    "handlers/sessions.py::api_sessions_member_history": (
+        "_MEMBER_HISTORY_MAX_BODY_BYTES",
+        _BOUNDED_EXPLICIT,
+    ),
 }
 
 _DASHBOARD_DIR = Path(shared.__file__).resolve().parent.parent
