@@ -29,6 +29,7 @@ def model(tmp_path, monkeypatch):
     monkeypatch.setattr(win.run_marker, "read_pid_record_path", lambda *_a: None)
     monkeypatch.setattr(rt, "IS_WINDOWS", True)
     monkeypatch.setattr(rt, "IS_MACOS", False)
+    monkeypatch.setattr(rt, "IS_LINUX", False)
     monkeypatch.setattr(rt.time, "sleep", lambda *_a: None)
 
     class Job:
