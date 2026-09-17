@@ -448,8 +448,9 @@ class TestMemberDispatchEndToEnd:
         # mint a worker whose resolved agent is bound to `default`/global or a
         # peer's store, laundering work out of its own private memory. The
         # `require_memory_delegation` guard (the same one the private spawn path
-        # uses) refuses that, and `create_session` maps it to
-        # `agent_store_mismatch`. The child agent-workspace check must pass first,
+        # uses) refuses that, and `create_session` maps it to a 403
+        # `memory_delegation_denied` -- a refusal of AUTHORITY, not a malformed
+        # request. The child agent-workspace check must pass first,
         # so pin `_workspace_name_for_dir` as the other end-to-end tests do; the
         # delegation guard itself is stubbed to reject, isolating this seam from
         # the member-binding plumbing exercised in test_member_memory_api.
@@ -471,7 +472,8 @@ class TestMemberDispatchEndToEnd:
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
         # No session is left behind on refusal.
         assert state.creator_slot_count(_MEMBER) == 0
 
@@ -480,8 +482,10 @@ class TestMemberDispatchEndToEnd:
     ):
         # require_memory_delegation reads the caller's binding from disk; a
         # corrupt/unreadable binding file surfaces as a bare ValueError, not
-        # UnknownMemoryStore. It must map to the same agent_store_mismatch refusal
-        # rather than escaping create_session as an unhandled 500.
+        # UnknownMemoryStore. It must map to the same 403 memory_delegation_denied
+        # refusal rather than escaping create_session as an unhandled 500 -- and
+        # its message must NOT carry the exception text, which is the private
+        # binding path.
         import kiro_crew.context as context
 
         state = _make_state(tmp_path)
@@ -491,13 +495,15 @@ class TestMemberDispatchEndToEnd:
         monkeypatch.setattr(sc, "member_dispatch_enabled", lambda: True)
 
         def _corrupt(_log, _parent, _target_store):
-            raise ValueError("The protected member session binding is missing or unreadable")
+            raise ValueError("/private/binding/path is missing or unreadable")
 
         monkeypatch.setattr(context, "require_memory_delegation", _corrupt)
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
+        assert "/private/binding/path" not in str(exc.value)
         assert state.creator_slot_count(_MEMBER) == 0
 
 
@@ -639,7 +645,8 @@ class TestMemberChildPrivateBinding:
 
         with pytest.raises(sc.SessionControlError) as exc:
             asyncio.run(sc.create_session(state, caller_session_key=slot_history_key(caller)))
-        assert exc.value.code == "agent_store_mismatch"
+        assert exc.value.code == "memory_delegation_denied"
+        assert exc.value.status == 403
         assert state.creator_slot_count(_MEMBER) == 0
 
     def test_a_v1_child_writes_no_private_binding(

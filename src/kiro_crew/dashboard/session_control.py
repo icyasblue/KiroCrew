@@ -1092,13 +1092,33 @@ async def create_session(
         caller_private_store = await asyncio.to_thread(
             read_private_session_store, caller_session_key
         )
-    except (UnknownMemoryStore, ValueError) as exc:
-        # UnknownMemoryStore is the delegation refusal proper; ValueError is the
-        # corrupt/unreadable binding-file case require_memory_delegation surfaces
-        # through read_private_session_store. Both are a store the caller may not
-        # delegate into -- map to one refusal rather than letting the bare
-        # ValueError escape as an unhandled 500.
-        raise SessionControlError(str(exc), code="agent_store_mismatch") from exc
+    except UnknownMemoryStore as exc:
+        # The delegation refusal PROPER: a private caller naming a store outside
+        # its own memory boundary. 403, because this is a refusal of authority --
+        # the request is well formed and the caller simply may not delegate there.
+        # `str(exc)` is safe to surface here and only here: the message is the
+        # authored sentence `require_memory_delegation` raises, carrying no host
+        # or path detail.
+        #
+        # This arm MUST precede the one below: `UnknownMemoryStore` subclasses
+        # `ValueError`, so the broader arm would otherwise swallow every
+        # delegation refusal and answer it with the generic message.
+        raise SessionControlError(str(exc), code="memory_delegation_denied", status=403) from exc
+    except (OSError, ValueError) as exc:
+        # Cannot VERIFY the delegation: `require_memory_delegation` reads the
+        # caller's binding from disk, so a corrupt file surfaces as a bare
+        # `ValueError` and an unreadable one as `OSError`. Both mean the guard
+        # could not answer, which must refuse rather than proceed -- and `OSError`
+        # belongs in this arm rather than escaping as an unhandled 500, which is
+        # the one outcome a delegation guard must never produce.
+        #
+        # A FIXED message, never `str(exc)`: the exception text is the private
+        # binding path, and this refusal crosses to the caller.
+        raise SessionControlError(
+            "cannot verify delegation within the caller's memory assignment",
+            code="memory_delegation_denied",
+            status=403,
+        ) from exc
 
     # SlotOrigin.USER, not SYSTEM: the visibility semantics must match an
     # ordinary session, because the point of creating it here is that the user
