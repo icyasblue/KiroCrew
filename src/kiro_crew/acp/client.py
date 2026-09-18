@@ -30,6 +30,7 @@ import subprocess as subprocess_mod
 import sys
 import tempfile
 import time
+import unicodedata
 import uuid
 from collections import deque
 from contextlib import aclosing, suppress
@@ -1268,6 +1269,183 @@ def _opencode_uniform_permission(raw: object) -> object:
             return values.pop()
         return json.dumps(raw, sort_keys=True)
     return None
+
+
+#: How much of a refused read-back child's stderr reaches the operator.
+#: The excerpt lands in a refusal that is shown in the dashboard, sent to the chat
+#: card and pasted into bug reports, while the child is a foreign harness binary
+#: that can print a stack trace or a screenful of banner. Enough for the one line
+#: that names the cause (``/bin/sh: /path/to/pi: Permission denied`` is 44), not
+#: enough to turn a refusal into a log dump.
+_READBACK_STDERR_EXCERPT_CHARS = 400
+
+
+#: Characters that are NOT in the credential alphabet the redactors' bare-secret
+#: patterns scan (``[A-Za-z0-9+/]``). Removing them from inside one whitespace-
+#: delimited token is what rejoins a run some arbitrary byte interrupted.
+_NON_CREDENTIAL_ALPHABET_RE = re.compile(r"[^A-Za-z0-9+/]")
+
+
+def _rejoined_child_output_tokens(text: str) -> str:
+    """*text* with every non-credential-alphabet character dropped INSIDE each token.
+
+    The probe that closes mid-token splitting in general rather than one character
+    family at a time. ``_flatten_child_output`` rejoins across SEPARATORS, which
+    leaves every other byte: an ANSI sequence contributes ``ESC`` (a separator) plus
+    trailing ``[31m`` bytes (not separators), and a lone ``-`` or ``.`` is not a
+    separator at all, so each still breaks the contiguous ``[A-Za-z0-9+/]{40,}`` run
+    the redactors need. Stripping to the alphabet inside a token rejoins the run
+    whatever split it.
+
+    Per TOKEN, not per line, and that granularity is the whole reason this is
+    usable: joining across whitespace would fuse ordinary prose into one long run
+    and flag every message. Whitespace-delimited tokens in a diagnostic stay short
+    -- the widest realistic one measured here is a 70-character
+    ``node_modules`` path, which the redactors' entropy and shape gates leave alone
+    -- while a 40-char secret is a single token by construction.
+
+    Reads the RAW stderr, never a flattened spelling, and that is not incidental.
+    Flattening replaces ``ESC`` with a space, which SPLITS the token an ANSI
+    sequence sits inside and hands this function two short halves instead of the
+    one long token it exists to inspect. ``str.split()`` leaves ``ESC`` alone
+    (``"\\x1b".isspace()`` is ``False``), so the raw text keeps the sequence inside
+    its token where stripping to the alphabet can reach it.
+    """
+    return " ".join(_NON_CREDENTIAL_ALPHABET_RE.sub("", token) for token in text.split())
+
+
+def _rejoined_child_output_whole(text: str) -> str:
+    """*text* reduced to its credential-alphabet characters, across the WHOLE string.
+
+    The spelling that closes a MIXED split, where one break is whitespace and
+    another is in-token punctuation. Neither narrower probe collapses that on its
+    own: :func:`_flatten_child_output` with ``""`` crosses the whitespace but keeps
+    the punctuation, and :func:`_rejoined_child_output_tokens` removes the
+    punctuation but never crosses a token boundary, so a run split both ways stays
+    broken in both and the redactors see nothing.
+
+    Kept ALONGSIDE the narrower two rather than replacing them. It dominates both on
+    every pattern measured today, but that dominance is a property of the redactors'
+    CURRENT pattern set, not of the construction: a rejoining destroys the word
+    boundaries and label anchors that a prefixed or labelled pattern needs, so a
+    maximal rejoin can miss what a narrower one catches. Four cheap string
+    operations on a bounded string, no shared state; keeping all of them costs
+    little and does not depend on that reasoning staying true.
+    """
+    return _NON_CREDENTIAL_ALPHABET_RE.sub("", text)
+
+
+def _is_child_output_separator(ch: str) -> bool:
+    """Whether *ch* is a character :func:`_flatten_child_output` must rewrite.
+
+    Two clauses, and both are load-bearing:
+
+    * ``str.isspace()`` is the AUTHORITATIVE half, because it is the predicate
+      ``str.split()`` itself uses to choose split points. The joined spelling
+      exists to rejoin a run some character interrupted, so the set it removes has
+      to be the set the splitter would break on -- derived from the splitter rather
+      than hand-listed beside it, or the two drift. A hand-listed category ``C``
+      test missed ``U+2028``/``U+2029``/``U+00A0`` (categories ``Zl``/``Zp``/``Zs``)
+      exactly that way: neither spelling removed them, ``split()`` turned each into
+      one space in BOTH, and a secret they interrupted was published whole.
+    * Categories ``C`` and ``Z`` add the invisibles ``str.isspace()`` does NOT
+      report -- ``U+200B`` ZERO WIDTH SPACE and ``U+2060`` WORD JOINER are ``Cf``
+      and answer ``False`` -- which do not split a token but do break the
+      redactors' contiguous-run patterns just as effectively.
+    """
+    return ch.isspace() or unicodedata.category(ch).startswith(("C", "Z"))
+
+
+def _flatten_child_output(text: str, control: str) -> str:
+    """*text* with every separator character replaced by *control*.
+
+    Whitespace runs are collapsed, so the result is one line. ``control`` is the
+    two spellings :func:`_readback_stderr_excerpt` has to consider: a space keeps
+    the words apart, an empty string rejoins whatever the separator interrupted.
+    :func:`_is_child_output_separator` decides what counts.
+    """
+    return " ".join(
+        "".join(control if _is_child_output_separator(ch) else ch for ch in text).split()
+    )
+
+
+def _readback_stderr_excerpt(stderr: object) -> str:
+    """One bounded, scrubbed, single-line excerpt of a read-back child's stderr.
+
+    A gate read-back that fails reports its child's exit code AND the child's own
+    account of why. The exit code alone names a verdict without a cause: on the pi
+    read-back the launcher is ``/bin/sh`` exec'ing the resolved harness binary, so
+    ``exit 126`` is the shell's EACCES-on-exec, and only the shell's sentence
+    separates an exec the OS refused (``Permission denied``) from a shebang it
+    cannot resolve (``bad interpreter``). Those are different faults with different
+    fixes, and the child is the only party that knows which one happened. The
+    refusal already travels to the operator, so it carries the sentence that makes
+    it actionable.
+
+    Three properties, each load-bearing:
+
+    * The **TAIL**, not the head. A harness writes its banner first and fails last,
+      so a head excerpt reports the banner and drops the diagnosis, which is the
+      one thing this exists to deliver.
+    * **Nothing secret-shaped is published, under any rejoining of the text.** The
+      redactors' bare-secret patterns need a contiguous ``[A-Za-z0-9+/]{40,}`` run,
+      so ANY byte dropped inside one hides a 40-char AWS secret key from them while
+      leaving every character of it in the text. Four spellings therefore go to the
+      redactors and the excerpt is emitted only when NONE of them is rewritten:
+
+      1. ``spaced`` -- separators replaced by a space. The spelling that is actually
+         published, and the one that preserves a label anchor (``key=``) a rejoining
+         would destroy.
+      2. separators DELETED (:func:`_flatten_child_output` with ``""``), which
+         rejoins a run split ACROSS whitespace, as a wrapped line does.
+      3. :func:`_rejoined_child_output_tokens`, which rejoins a run split WITHIN a
+         token by anything at all -- the trailing ``[31m`` of an ANSI sequence, a
+         lone ``-`` or ``.``, a combining mark.
+      4. :func:`_rejoined_child_output_whole`, which rejoins a MIXED split, where
+         one break is whitespace and another is punctuation. 2 keeps the punctuation
+         and 3 never crosses the whitespace, so a run broken both ways survives both.
+
+      When any spelling is rewritten the caller reports the bare exit code: no
+      diagnosis, which is what this path offers when a child is silent, and never a
+      credential. The child is a foreign harness binary writing arbitrary bytes, so
+      this fails closed rather than reasoning about how likely such a run is.
+
+      What this does NOT establish is immunity to a DELIBERATELY mangled credential.
+      Rejoining and anchoring pull against each other -- a rejoin restores the run a
+      bare-secret pattern needs and destroys the word boundary a prefixed pattern
+      needs -- so no single spelling satisfies both, and a union of spellings only
+      covers the combinations it enumerates. A measured residual: an
+      ``AWS_ACCESS_KEY_ID`` broken by a dot AND a newline is caught by none of the
+      four, because every spelling that restores its ``AKIA`` prefix also removes
+      the boundary the prefix rule matches on. Reaching that requires a harness
+      arranging its own stderr to defeat the redactors, and such a harness is the
+      process Crew is about to hand tool access to -- it holds the network, the
+      operator's files and the tool channel already, all better exfiltration paths
+      than hoping a refusal quotes it. The ACCIDENTAL case, a harness that simply
+      prints a credential it happens to hold, is what the four spellings cover.
+    * **Bounded last**, at :data:`_READBACK_STDERR_EXCERPT_CHARS`, so the cut is
+      taken from text the redactors have already cleared rather than from a token
+      that could be halved.
+
+    Non-strings, blank stderr, and stderr whose redaction is ambiguous answer
+    ``""``.
+    """
+    if not isinstance(stderr, str) or not stderr:
+        return ""
+    spaced = _flatten_child_output(stderr, " ")
+    if not spaced:
+        return ""
+    for spelling in (
+        spaced,
+        _flatten_child_output(stderr, ""),
+        _rejoined_child_output_tokens(stderr),
+        _rejoined_child_output_whole(stderr),
+    ):
+        if _scrub_observed(spelling) != spelling:
+            return ""
+    if len(spaced) > _READBACK_STDERR_EXCERPT_CHARS:
+        return "..." + spaced[-_READBACK_STDERR_EXCERPT_CHARS:]
+    return spaced
 
 
 def _scrub_observed(value: object) -> object:
@@ -5428,9 +5606,15 @@ class AcpClient:
                 _opencode_readback_remedy(),
             )
         if completed.returncode != 0:
+            # The child's own reason, same as the pi read-back below: an operator
+            # reading this refusal learns both that the harness failed and what it
+            # said about why.
+            detail = f"exit {completed.returncode}"
+            excerpt = _readback_stderr_excerpt(completed.stderr)
+            if excerpt:
+                detail = f"{detail}: {excerpt}"
             return (
-                "the resolved configuration could not be read back "
-                f"(exit {completed.returncode})",
+                f"the resolved configuration could not be read back ({detail})",
                 _opencode_readback_remedy(),
             )
         # The harness prints a banner before the document, so the object is found
@@ -5521,6 +5705,13 @@ class AcpClient:
         commands = _pi_commands_from_readback(completed.stdout)
         if commands is None:
             detail = f"exit {completed.returncode}" if completed.returncode != 0 else "no response"
+            # The child's OWN account of what went wrong. The launcher is /bin/sh
+            # exec'ing the resolved harness binary, so its stderr is what separates
+            # an exec the OS refused from a shebang that cannot be resolved -- a
+            # distinction the exit code alone cannot carry.
+            excerpt = _readback_stderr_excerpt(completed.stderr)
+            if excerpt:
+                detail = f"{detail}: {excerpt}"
             return (
                 f"the harness's command registry could not be read back ({detail})",
                 _pi_readback_remedy(),
