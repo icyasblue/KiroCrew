@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { matchFileToken, matchSkillToken, replaceTokenAtCaret } from '../components/composerTokens'
+import { matchFileToken, matchPathToken, matchSkillToken, PATH_TOKEN_RE, pathTokenLeavesProject, replaceTokenAtCaret, splitPathToken } from '../components/composerTokens'
 
 // These matchers take the text BEFORE the caret. A returned string is the query
 // (the picker opens); null means the caret is not inside a token (picker closed).
@@ -61,6 +61,76 @@ describe('matchFileToken (caret-relative @ detection)', () => {
   })
 })
 
+describe('matchPathToken (caret-relative ./ detection)', () => {
+  it('opens on a bare ./ or ../ run and captures the whole token', () => {
+    expect(matchPathToken('./')).toBe('./')
+    expect(matchPathToken('../')).toBe('../')
+    expect(matchPathToken('read ../../src/a')).toBe('../../src/a')
+  })
+
+  it('fires mid-sentence with text after the caret excluded from `before`', () => {
+    expect(matchPathToken('open ./src/ma')).toBe('./src/ma')
+    expect(matchPathToken('line one\n./sr')).toBe('./sr')
+  })
+
+  it('needs a separator, so abbreviations and full stops never open a menu', () => {
+    expect(matchPathToken('e.g')).toBeNull()
+    expect(matchPathToken('done.')).toBeNull()
+    expect(matchPathToken('..')).toBeNull()
+    expect(matchPathToken('...')).toBeNull()
+  })
+
+  it('does NOT fire when the caret is past the token or the dot is mid-word', () => {
+    expect(matchPathToken('./src and more')).toBeNull()
+    expect(matchPathToken('a/../b')).toBeNull()
+  })
+
+  it('leaves ~/ alone — home is not a completion root', () => {
+    expect(matchPathToken('~/')).toBeNull()
+    expect(matchPathToken('~/src/a')).toBeNull()
+  })
+})
+
+describe('splitPathToken (directory prefix vs partial name)', () => {
+  it('splits at the last separator, keeping the prefix verbatim', () => {
+    expect(splitPathToken('./')).toEqual({ dir: './', partial: '' })
+    expect(splitPathToken('./src/comp')).toEqual({ dir: './src/', partial: 'comp' })
+    expect(splitPathToken('../../a/b')).toEqual({ dir: '../../a/', partial: 'b' })
+  })
+})
+
+describe('pathTokenLeavesProject (which empty state is the true one)', () => {
+  const PROJ = '/work/notes'
+
+  it('stays inside for ./ and for a descent', () => {
+    expect(pathTokenLeavesProject(PROJ, './')).toBe(false)
+    expect(pathTokenLeavesProject(PROJ, './src/a')).toBe(false)
+    expect(pathTokenLeavesProject(PROJ, './src/../')).toBe(false)
+  })
+
+  it('leaves for a bare ../ run — the shape a shell user tries first', () => {
+    expect(pathTokenLeavesProject(PROJ, '../')).toBe(true)
+    expect(pathTokenLeavesProject(PROJ, '../../src/a')).toBe(true)
+    expect(pathTokenLeavesProject(PROJ, '../sibling/')).toBe(true)
+  })
+
+  it('comes back inside when the run re-enters the project', () => {
+    expect(pathTokenLeavesProject(PROJ, '../notes/')).toBe(false)
+    expect(pathTokenLeavesProject(PROJ, '../notes/src/a')).toBe(false)
+  })
+
+  it('handles a Windows project dir and a trailing separator', () => {
+    expect(pathTokenLeavesProject('C:\\work\\notes', './src/')).toBe(false)
+    expect(pathTokenLeavesProject('C:\\work\\notes', '../')).toBe(true)
+    expect(pathTokenLeavesProject('/work/notes/', '../')).toBe(true)
+  })
+
+  it('cannot pop past the filesystem root', () => {
+    expect(pathTokenLeavesProject('/', '../')).toBe(true)
+    expect(pathTokenLeavesProject('/work/notes', '../../../../../')).toBe(true)
+  })
+})
+
 describe('replaceTokenAtCaret (caret-relative insertion)', () => {
   it('replaces the $token at the caret and preserves text after the caret', () => {
     // "check this $cr| more" -> caret after "$cr" (index 14)
@@ -110,6 +180,20 @@ describe('caret-relative detection across newlines + detection↔insertion agree
     expect(matchSkillToken(value.slice(0, caret))).toBe('cr')
     const next = replaceTokenAtCaret(value, caret, SKILL_INSERT_RE, '$cr-review ')
     expect(next.value).toBe('hi $cr-review  more\nnext')
+  })
+
+  it('path insertion replaces exactly the detected token, prefix and all', () => {
+    const value = 'read ./src/ma later'
+    const caret = 'read ./src/ma'.length
+    expect(matchPathToken(value.slice(0, caret))).toBe('./src/ma')
+    const next = replaceTokenAtCaret(value, caret, PATH_TOKEN_RE, './src/main.ts ')
+    expect(next.value).toBe('read ./src/main.ts  later')
+  })
+
+  it('path insertion replaces a multi-level ../ run as one span', () => {
+    const value = 'read ../../src/a'
+    const next = replaceTokenAtCaret(value, value.length, PATH_TOKEN_RE, '../../src/app.ts ')
+    expect(next.value).toBe('read ../../src/app.ts ')
   })
 
   it('@ insertion preserves after-caret content across a newline', () => {

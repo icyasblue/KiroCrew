@@ -6358,7 +6358,9 @@
       "searching_enter_held": "खोज रहे हैं… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
       "type_2_chars_to_search_files_ctrl_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Ctrl+Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Ctrl+Enter संदेश भेज देगा",
       "type_2_chars_to_search_files_enter_held": "फ़ाइलें और फ़ोल्डर खोजने के लिए 2+ अक्षर टाइप करें… — Enter अभी संदेश नहीं भेजेगा; Esc दबाएँ, फिर Enter संदेश भेज देगा",
-      "search_failed": "फ़ाइलें खोजी नहीं जा सकीं। कृपया पुनः प्रयास करें।"
+      "search_failed": "फ़ाइलें खोजी नहीं जा सकीं। कृपया पुनः प्रयास करें।",
+      "outside_project_enter_sends": "प्रोजेक्ट के बाहर; केवल प्रोजेक्ट के अंदर के पथ पूरे किए जा सकते हैं — Enter संदेश भेज देगा",
+      "outside_project_ctrl_enter_sends": "प्रोजेक्ट के बाहर; केवल प्रोजेक्ट के अंदर के पथ पूरे किए जा सकते हैं — Ctrl+Enter संदेश भेज देगा"
     },
     "fileRenderers": {
       "download": "डाउनलोड करें",
