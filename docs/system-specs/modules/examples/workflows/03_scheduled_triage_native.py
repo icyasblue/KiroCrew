@@ -30,15 +30,21 @@ async def workflow(ctx):
     ctx.log(f"Skipping {len(noisy)} resolver groups learned as noisy")
 
     # --- ensure we run again tomorrow (idempotent) ---
-    ctx.cron.ensure("ticket-triage-daily", cron_expr="0 9 * * *",
-                    workflow="ticket-triage", timezone="US/Pacific")
+    ctx.cron.ensure(
+        "ticket-triage-daily",
+        cron_expr="0 9 * * *",
+        workflow="ticket-triage",
+        timezone="US/Pacific",
+    )
 
     ctx.phase("Fetch")
     tickets = await ctx.agent(
         "List my open resolver-group tickets as JSON.",
-        schema={"type": "object",
-                "properties": {"tickets": {"type": "array", "items": {"type": "object"}}},
-                "required": ["tickets"]},
+        schema={
+            "type": "object",
+            "properties": {"tickets": {"type": "array", "items": {"type": "object"}}},
+            "required": ["tickets"],
+        },
     )
     queue = [t for t in tickets["tickets"] if t.get("resolver") not in noisy]
 
@@ -59,8 +65,9 @@ async def workflow(ctx):
 
     # --- learn: resolver groups that produced only noise get down-weighted ---
     noise_ratio = _noise_by_resolver(queue, triaged)
-    ctx.memory.set("triage.noisy_resolvers",
-                   sorted({r for r, ratio in noise_ratio.items() if ratio > 0.9}))
+    ctx.memory.set(
+        "triage.noisy_resolvers", sorted({r for r, ratio in noise_ratio.items() if ratio > 0.9})
+    )
 
     # --- deliver a digest to the owner's Slack DM ---
     ctx.phase("Deliver")

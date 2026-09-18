@@ -62,8 +62,10 @@ async def workflow(ctx):
 
         ctx.phase("Find")
         rounds = await ctx.parallel(
-            [lambda f=f: ctx.agent(f["prompt"], label=f"find:{f['name']}", schema=BUGS_SCHEMA)
-             for f in FINDERS]
+            [
+                lambda f=f: ctx.agent(f["prompt"], label=f"find:{f['name']}", schema=BUGS_SCHEMA)
+                for f in FINDERS
+            ]
         )
         fresh = [b for r in rounds if r for b in r["bugs"] if _key(b) not in seen]
         if not fresh:
@@ -77,8 +79,12 @@ async def workflow(ctx):
 
         ctx.phase("Judge")
         judged = await ctx.parallel(
-            [lambda b=b: ctx.agent(f"Is this a real bug? {b['desc']}", schema=VERDICT)
-             .then(lambda v, b=b: (b, v)) for b in fresh]
+            [
+                lambda b=b: ctx.agent(f"Is this a real bug? {b['desc']}", schema=VERDICT).then(
+                    lambda v, b=b: (b, v)
+                )
+                for b in fresh
+            ]
         )
         confirmed += [b for (b, v) in judged if v and v["real"]]
         ctx.log(f"{len(confirmed)} confirmed; {ctx.budget.remaining() // 1000}k tokens left")

@@ -80,8 +80,11 @@ async def workflow(ctx):
     results = await ctx.pipeline(DIMENSIONS, review_stage, verify_stage)
 
     confirmed = [
-        f for group in results if group
-        for f in group if f and f["verdict"] and f["verdict"]["is_real"]
+        f
+        for group in results
+        if group
+        for f in group
+        if f and f["verdict"] and f["verdict"]["is_real"]
     ]
     ctx.log(f"{len(confirmed)} confirmed findings")
     return {"cr": cr, "confirmed": confirmed}
